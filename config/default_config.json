@@ -1,0 +1,11 @@
+{
+  "trigger_key": "cmd_r",
+  "replacements": {
+    "cloud code": "Claude Code",
+    "cloud cold": "Claude Code",
+    "克劳德": "Claude",
+    "n八n": "n8n",
+    "N八n": "n8n",
+    "质朴": "智谱"
+  }
+}

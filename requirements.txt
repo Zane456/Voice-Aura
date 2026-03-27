@@ -1,0 +1,6 @@
+funasr
+sounddevice
+pynput
+numpy
+torch
+modelscope
