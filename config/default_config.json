@@ -1,11 +1,18 @@
 {
   "trigger_key": "cmd_r",
+  "model": "Qwen/Qwen3-ASR-1.7B",
   "replacements": {
     "cloud code": "Claude Code",
     "cloud cold": "Claude Code",
     "克劳德": "Claude",
     "n八n": "n8n",
     "N八n": "n8n",
-    "质朴": "智谱"
+    "质朴": "智谱",
+    "G L M": "GLM",
+    "open router": "OpenRouter",
+    "openrouter": "OpenRouter",
+    "code x": "CodeX",
+    "sonnet": "Sonnet",
+    "opus": "Opus"
   }
 }

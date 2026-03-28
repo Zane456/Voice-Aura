@@ -40,9 +40,15 @@ Thumbs.db
 # Logs
 *.log
 
+# macOS app bundle (build artifact)
+*.app/
+
 # Model cache (large files)
 .cache/
 models/
 
 # Local config (users should create their own)
 # Note: we keep config template, but not user's actual config
+
+# Tool configs
+.superpowers/

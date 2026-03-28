@@ -1,6 +1,8 @@
 funasr
 sounddevice
+soundfile
 pynput
 numpy
 torch
 modelscope
+qwen-asr

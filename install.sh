@@ -56,9 +56,41 @@ echo ""
 $PYTHON -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 || \
 $PYTHON -m pip install -r requirements.txt
 
+# 创建虚拟环境（如果不存在）
+if [ ! -d "$SCRIPT_DIR/venv" ]; then
+    echo ""
+    echo ">>> 创建虚拟环境..."
+    $PYTHON -m venv "$SCRIPT_DIR/venv"
+    VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
+    echo ">>> 在虚拟环境中安装依赖..."
+    $VENV_PYTHON -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 || \
+    $VENV_PYTHON -m pip install -r requirements.txt
+fi
+
 echo ""
 echo "✅ 依赖安装完成"
 echo ""
+
+# 更新 /Applications 下的 .app 应用程序包
+APP_BUNDLE="/Applications/Voice-Aura.app"
+if [ -d "$APP_BUNDLE" ]; then
+    echo ">>> 更新应用程序包: $APP_BUNDLE"
+    VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
+    if [ ! -f "$VENV_PYTHON" ]; then
+        VENV_PYTHON="$(which python3 || which python)"
+    fi
+    cat > "$APP_BUNDLE/Contents/MacOS/launch" << LAUNCHER_EOF
+#!/bin/bash
+cd "$SCRIPT_DIR"
+export PYTHONUNBUFFERED=1
+exec "$VENV_PYTHON" "$SCRIPT_DIR/src/voice_gui.py"
+LAUNCHER_EOF
+    chmod +x "$APP_BUNDLE/Contents/MacOS/launch"
+    codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+    echo "✅ 应用程序包已更新"
+else
+    echo "ℹ️  未找到 /Applications/Voice-Aura.app，跳过更新"
+fi
 
 # 创建默认配置文件
 CONFIG_FILE="$HOME/.voice_config.json"
@@ -93,9 +125,9 @@ echo ""
 echo "   2. 辅助功能权限："
 echo "      系统设置 → 隐私与安全性 → 辅助功能 → 添加终端"
 echo ""
-echo "📌 首次运行会自动下载语音模型（约 1-2GB）"
+echo "📌 首次运行会自动下载语音模型（0.6B 约 1.5GB，1.7B 约 3.5GB）"
 echo ""
 echo "🚀 运行方式："
-echo "   ./run.sh          # 启动 GUI 管理器"
+echo "   ./run.sh          # 通过 .app 包启动（推荐，权限持久化）"
 echo "   ./run.sh --cli    # 直接启动服务（无 GUI）"
 echo ""

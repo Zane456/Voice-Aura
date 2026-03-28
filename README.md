@@ -1,18 +1,20 @@
-# 语音输入管理器
+# Voice Aura
 
-基于 FunASR 的 macOS 按键语音输入工具。按住指定键说话，松开后自动识别并输入到光标位置。
+macOS 按键语音输入工具。按住指定键说话，松开后自动识别并输入到光标位置。
+
+使用 Qwen3-ASR 模型，支持 Apple Silicon (MPS) 加速。
 
 ## 功能特性
 
 - **按键触发录音** - 按住右 Command（可自定义）开始录音，松开自动识别
-- **高精度中文识别** - 使用阿里 FunASR 模型，识别准确率高
-- **热词支持** - 自定义热词提升特定词汇识别率
-- **替换规则** - 自动修正常见误识别
-- **GUI 管理** - 图形界面管理服务、按键和规则
+- **高精度中文识别** - 使用 Qwen3-ASR 模型，业界领先中文识别准确率
+- **替换规则** - 自动修正常见误识别，GUI 中可自定义
+- **GUI 管理** - 图形界面管理服务、模型选择和规则
+- **模型切换** - 支持 1.7B（精确）和 0.6B（极速）两种模型
 
 ## 系统要求
 
-- macOS 10.15+
+- macOS 12+ (Apple Silicon 或 Intel)
 - Python 3.9+
 - 约 5GB 磁盘空间（首次运行需下载模型）
 
@@ -21,8 +23,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/你的用户名/voice-input.git
-cd voice-input
+git clone https://github.com/Zane456/Voice-Aura.git
+cd Voice-Aura
 ```
 
 ### 2. 安装依赖
@@ -64,17 +66,11 @@ chmod +x install.sh run.sh
 - Control
 - Shift
 
-### 热词
+### 识别模型
 
-热词可以提升特定词汇的识别准确率。编辑 `~/hotwords.txt`，每行一个词：
-
-```
-Claude Code 100
-OpenRouter 50
-n8n 50
-```
-
-数字表示热词权重（可选，默认 50）。
+在 GUI 中可切换模型：
+- **Qwen3-ASR-1.7B (精确)** - 默认，识别准确率更高
+- **Qwen3-ASR-0.6B (极速)** - 速度更快，适合实时场景
 
 ### 替换规则
 
@@ -89,9 +85,9 @@ cloud code → Claude Code
 
 | 文件 | 说明 |
 |------|------|
-| `~/.voice_config.json` | 配置文件（触发键、替换规则） |
-| `~/hotwords.txt` | 热词列表 |
-| `~/.cache/modelscope/` | 模型缓存目录 |
+| `~/.voice_config.json` | 配置文件（触发键、模型、替换规则） |
+| `/tmp/voice_input.log` | 服务运行日志 |
+| `~/.cache/huggingface/` | 模型缓存目录 |
 
 ## 常见问题
 
@@ -105,15 +101,18 @@ cloud code → Claude Code
 
 ### 首次启动很慢
 
-首次运行需要下载约 1-2GB 的模型文件，请耐心等待。
+首次运行需要下载模型（1.7B 约 3.5GB，0.6B 约 1.5GB），请耐心等待。后续启动只需加载模型（约 10-30 秒）。
 
-### 如何更新替换规则后生效
+### 模型下载失败
 
-在 GUI 中修改替换规则后，需要重启服务才能生效。
+使用国内镜像：
+```bash
+HF_ENDPOINT=https://hf-mirror.com ./run.sh --cli
+```
 
 ## 依赖
 
-- [FunASR](https://github.com/alibaba-damo-academy/FunASR) - 阿里开源语音识别框架
+- [Qwen3-ASR](https://huggingface.co/Qwen) - 语音识别模型
 - [sounddevice](https://python-sounddevice.readthedocs.io/) - 音频录制
 - [pynput](https://pynput.readthedocs.io/) - 键盘监听
 
