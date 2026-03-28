@@ -17,6 +17,8 @@ KEY_CODES = {
     "shift": 0x38,
 }
 
+SPACE_KEYCODE = 0x31
+
 # 对应的 CGEventFlags 位掩码
 KEY_FLAGS = {
     "cmd_r": Quartz.kCGEventFlagMaskCommand,
@@ -35,12 +37,15 @@ class KeyboardListener:
     on_release 在独立线程中执行，避免阻塞事件循环导致 macOS 禁用事件监听。
     """
 
-    def __init__(self, key_name="cmd_r", on_press=None, on_release=None):
+    def __init__(self, key_name="cmd_r", on_press=None, on_release=None,
+                 on_reposition=None):
         self._key_code = KEY_CODES.get(key_name, 0x36)
         self._flag_mask = KEY_FLAGS.get(key_name, Quartz.kCGEventFlagMaskCommand)
         self._on_press = on_press
         self._on_release = on_release
+        self._on_reposition = on_reposition
         self._pressed = False
+        self._space_swallowed = False
         self._tap = None
         self._source = None
         self._run_loop = None
@@ -65,10 +70,36 @@ class KeyboardListener:
             self._thread = None
 
     def _run(self):
-        event_mask = (1 << Quartz.kCGEventFlagsChanged)
+        event_mask = (
+            (1 << Quartz.kCGEventFlagsChanged)
+            | (1 << Quartz.kCGEventKeyDown)
+            | (1 << Quartz.kCGEventKeyUp)
+        )
         release_event = threading.Event()
 
         def callback(proxy, event_type, event, refcon):
+            # 录音中按空格 → 触发重新定位，根据返回值决定是否吞掉按键
+            if event_type in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+                if self._pressed:
+                    keycode = Quartz.CGEventGetIntegerValueField(
+                        event, Quartz.kCGKeyboardEventKeycode
+                    )
+                    if keycode == SPACE_KEYCODE:
+                        if event_type == Quartz.kCGEventKeyDown and self._on_reposition:
+                            try:
+                                handled = self._on_reposition()
+                            except Exception:
+                                handled = False
+                            if handled:
+                                self._space_swallowed = True
+                                return None
+                            self._space_swallowed = False
+                        elif event_type == Quartz.kCGEventKeyUp and self._space_swallowed:
+                            self._space_swallowed = False
+                            return None
+                return event
+
+            # 修饰键状态变化 → 检测触发键按下/释放
             keycode = Quartz.CGEventGetIntegerValueField(
                 event, Quartz.kCGKeyboardEventKeycode
             )

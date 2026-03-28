@@ -1,6 +1,7 @@
 {
   "trigger_key": "cmd_r",
   "model": "Qwen/Qwen3-ASR-1.7B",
+  "hotwords": ["Claude Code", "OpenRouter", "n8n", "智谱", "GLM", "Sonnet", "Opus"],
   "replacements": {
     "cloud code": "Claude Code",
     "cloud cold": "Claude Code",

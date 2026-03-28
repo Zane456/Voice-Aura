@@ -158,6 +158,7 @@ class RecordingOverlay:
         )
 
         content_rect = NSMakeRect(0, 0, self.PANEL_WIDTH, self.PANEL_HEIGHT)
+
         vibrancy = NSVisualEffectView.alloc().initWithFrame_(content_rect)
         vibrancy.setMaterial_(NSVisualEffectMaterialHUDWindow)
         vibrancy.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)

@@ -11,9 +11,12 @@ from tkinter import ttk, messagebox
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 
-from backend.config import load_config, save_config, KEY_OPTIONS, MODEL_OPTIONS
+from backend.config import load_config, save_config, is_fresh_install, KEY_OPTIONS, MODEL_OPTIONS
 from backend.voice_service import VoiceService
-from backend.permissions import check_accessibility, open_accessibility_settings, open_microphone_settings
+from backend.permissions import (
+    check_accessibility, open_accessibility_settings, open_microphone_settings,
+    check_microphone, request_microphone_permission,
+)
 
 # ===== 配色方案：Powder Blue Glassmorphism =====
 C = {
@@ -119,11 +122,13 @@ class VoiceInputManager:
         root.geometry(f"{w}x{h}+{(sw-w)//2}+{max(0,(sh-h)//2)}")
         root.minsize(800, 600)
         root.resizable(True, True)
+        self._is_fresh = is_fresh_install()
         self.config = load_config()
         from frontend.recording_overlay import RecordingOverlay
         self.service = VoiceService(
             overlay=RecordingOverlay(),
             on_error=self._on_service_error,
+            on_progress=self._on_service_progress,
         )
         self._setup_styles()
 
@@ -154,17 +159,36 @@ class VoiceInputManager:
                 fill=b.highlight, outline="")
             self._bub_ids.append({"rim": rim, "body": body, "shine": shine})
 
+        # 滚动条
+        self._scrollbar = tk.Scrollbar(self.root, orient=tk.VERTICAL,
+                                        command=self.canvas.yview)
+        self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.config(yscrollcommand=self._scrollbar.set)
+
         # 主面板（canvas window，四周留白让泡泡可见）
         self.panel = tk.Frame(self.canvas, bg=C["bg_panel"])
         self._panel_win = self.canvas.create_window(
             self.MARGIN, self.MARGIN, window=self.panel, anchor=tk.NW)
+
+        # 面板内容变化时更新滚动区域
+        self.panel.bind("<Configure>", self._on_panel_cfg)
+
+        # 鼠标滚轮 — bind_all 确保子控件也能触发滚动
+        root.bind_all("<MouseWheel>", self._on_mousewheel)
+        root.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        root.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
 
         self.setup_ui()
         self.update_status()
         self._start_polling()
         self.canvas.bind("<Configure>", self._on_canvas_cfg)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # macOS: Cmd+Q 真正退出，Dock 图标点击恢复窗口
+        root.createcommand("::tk::mac::Quit", self._real_quit)
+        root.createcommand("::tk::mac::ReopenApplication", self._on_reopen)
         self._animate()
+        # 首次启动引导
+        root.after(300, self._show_onboarding)
 
     # ── 动画 ──
 
@@ -191,14 +215,42 @@ class VoiceInputManager:
 
     def _on_canvas_cfg(self, event):
         w = max(0, event.width - 2 * self.MARGIN)
-        h = max(0, event.height - 2 * self.MARGIN)
-        self.canvas.itemconfigure(self._panel_win, width=w, height=h)
+        self.canvas.itemconfigure(self._panel_win, width=w)
+        self._update_scroll_region()
+
+    def _on_panel_cfg(self, event):
+        self._update_scroll_region()
+
+    def _update_scroll_region(self):
+        self.canvas.update_idletasks()
+        pw = self.panel.winfo_reqwidth()
+        ph = self.panel.winfo_reqheight()
+        m = self.MARGIN
+        self.canvas.config(scrollregion=(0, 0, pw + m * 2, ph + m * 2))
+
+    def _on_mousewheel(self, event):
+        # macOS: delta 是 ±1~±10，Windows: ±120
+        if abs(event.delta) >= 120:
+            delta = -int(event.delta / 120)
+        else:
+            delta = -event.delta
+        self.canvas.yview_scroll(delta, "units")
 
     def _on_close(self):
+        """点击窗口关闭按钮 — 仅隐藏窗口，不退出程序"""
+        self.root.withdraw()
+
+    def _on_reopen(self):
+        """Dock 图标被点击时重新显示窗口"""
+        self.root.deiconify()
+
+    def _real_quit(self):
+        """Cmd+Q — 真正退出应用"""
         if hasattr(self, "_anim_id"):
             self.root.after_cancel(self._anim_id)
         if hasattr(self, "_poll_id"):
             self.root.after_cancel(self._poll_id)
+        self.service.stop()
         self.root.destroy()
 
     # ── 样式 ──
@@ -264,6 +316,45 @@ class VoiceInputManager:
         return self._make_btn(parent, text, cmd, C["bg_card"], fg or C["text_sec"],
                               font=("Helvetica", 12), padx=14, pady=6, r=9)
 
+    def _make_toggle(self, parent, var, on_change=None):
+        """创建开关组件（pill 形滑块）"""
+        W, H, THR = 44, 24, 9
+        bg = parent.cget("bg")
+        cv = tk.Canvas(parent, width=W, height=H, bg=bg,
+                       highlightthickness=0, cursor="hand2")
+
+        def draw():
+            cv.delete("all")
+            on = var.get()
+            self._rr(cv, 0, 0, W, H, r=H // 2,
+                     fill=C["green"] if on else C["border"], outline="")
+            cx = W - THR - 4 if on else THR + 4
+            cy = H // 2
+            cv.create_oval(cx - THR, cy - THR, cx + THR, cy + THR,
+                           fill=C["white"], outline="")
+
+        def toggle(e=None):
+            var.set(not var.get())
+            draw()
+            if on_change:
+                on_change()
+
+        cv.bind("<Button-1>", toggle)
+        draw()
+        return cv
+
+    def _toggle_fillers(self):
+        val = self.fillers_var.get()
+        self.config["remove_fillers"] = val
+        save_config(self.config)
+        self.service.remove_fillers_enabled = val
+
+    def _toggle_reposition(self):
+        val = self.reposition_var.get()
+        self.config["space_reposition"] = val
+        save_config(self.config)
+        self.service.space_reposition_enabled = val
+
     def check_permissions(self):
         if check_accessibility():
             self.perm_label.config(text="辅助功能权限已授予", fg=C["green"])
@@ -300,6 +391,17 @@ class VoiceInputManager:
         self.status_dot.pack(side=tk.LEFT, padx=(12, 4))
         self.status_label = tk.Label(sr, text="检查中...", font=("Helvetica", 12), bg=C["bg_card"], fg=C["text_sec"])
         self.status_label.pack(side=tk.LEFT)
+
+        # 下载/加载进度（默认隐藏）
+        self._progress_frame = tk.Frame(c1, bg=C["bg_card"])
+        self._progress_detail = tk.Label(
+            self._progress_frame, text="", font=("Helvetica", 11),
+            bg=C["bg_card"], fg=C["text_sec"])
+        self._progress_detail.pack(anchor=tk.W)
+        self._progress_canvas = tk.Canvas(
+            self._progress_frame, height=10, bg=C["border"],
+            highlightthickness=0, bd=0)
+        self._progress_canvas.pack(fill=tk.X, pady=(4, 0))
 
         br = tk.Frame(c1, bg=C["bg_card"]); br.pack(fill=tk.X, padx=16, pady=(4, 14))
         self.start_btn = self._make_btn(br, "\u25B6  启动", self.on_start, C["green_btn"], C["btn_text"], hover=C["green_btn_hover"])
@@ -340,10 +442,53 @@ class VoiceInputManager:
         ttk.Combobox(ki, textvariable=self.key_var, values=list(KEY_OPTIONS.keys()), state="readonly", width=12).pack(side=tk.LEFT, padx=(0, 8))
         self._accent_btn(ki, "保存", self.save_key, text_color=C["btn_text"]).pack(side=tk.LEFT)
 
+        # 功能开关卡片
+        c_feat = self._card(p); c_feat.pack(fill=tk.X, padx=8, pady=8)
+        self._section_title(c_feat, "功能开关")
+
+        self.fillers_var = tk.BooleanVar(value=self.config.get("remove_fillers", True))
+        f1 = tk.Frame(c_feat, bg=C["bg_card"]); f1.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(f1, text="去除语气词", font=("Helvetica", 12),
+                 bg=C["bg_card"], fg=C["text"]).pack(side=tk.LEFT)
+        self._make_toggle(f1, self.fillers_var, self._toggle_fillers).pack(side=tk.RIGHT)
+        tk.Label(c_feat, text="自动过滤「呃、嗯、额」等语气词",
+                 font=("Helvetica", 10), bg=C["bg_card"], fg=C["text_hint"]
+                 ).pack(anchor=tk.W, padx=16, pady=(0, 8))
+
+        self.reposition_var = tk.BooleanVar(value=self.config.get("space_reposition", True))
+        f2 = tk.Frame(c_feat, bg=C["bg_card"]); f2.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(f2, text="空格重新定位", font=("Helvetica", 12),
+                 bg=C["bg_card"], fg=C["text"]).pack(side=tk.LEFT)
+        self._make_toggle(f2, self.reposition_var, self._toggle_reposition).pack(side=tk.RIGHT)
+        tk.Label(c_feat, text="录音中按空格在鼠标位置点击，重新定位输入光标",
+                 font=("Helvetica", 10), bg=C["bg_card"], fg=C["text_hint"]
+                 ).pack(anchor=tk.W, padx=16, pady=(0, 12))
+
+        # 稡型热词
+        c3b = self._card(p); c3b.pack(fill=tk.X, expand=True, padx=8, pady=8)
+        self._section_title(c3b, "模型热词")
+        tk.Label(c3b, text="传递给识别模型，帮助识别专有名词", font=("Helvetica", 10), bg=C["bg_card"], fg=C["text_hint"]).pack(anchor=tk.W, padx=16, pady=(0, 4))
+        lf_hw = tk.Frame(c3b, bg=C["bg_card"]); lf_hw.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
+        sb_hw = tk.Scrollbar(lf_hw, bd=0); sb_hw.pack(side=tk.RIGHT, fill=tk.Y)
+        self.hotwords_listbox = tk.Listbox(lf_hw, font=("Helvetica", 12), bd=0, bg=C["white"], fg=C["text"], selectbackground=C["list_sel"], selectforeground=C["text"], highlightthickness=0, yscrollcommand=sb_hw.set, activestyle="none")
+        self.hotwords_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb_hw.config(command=self.hotwords_listbox.yview)
+        self.refresh_hotwords()
+
+        af_hw = tk.Frame(c3b, bg=C["bg_card"]); af_hw.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(af_hw, text="热词", font=("Helvetica", 11), bg=C["bg_card"], fg=C["text_sec"]).pack(side=tk.LEFT)
+        self.hotword_entry = tk.Entry(af_hw, font=("Helvetica", 12), width=16, bg=C["white"], fg=C["text"], bd=0, highlightthickness=1, highlightbackground=C["input_border"], highlightcolor=C["input_focus"], insertbackground=C["text"])
+        self.hotword_entry.pack(side=tk.LEFT, padx=(4, 8))
+        self._accent_btn(af_hw, "+ 添加", self.add_hotword).pack(side=tk.LEFT)
+
+        bf_hw = tk.Frame(c3b, bg=C["bg_card"]); bf_hw.pack(fill=tk.X, padx=16, pady=(4, 12))
+        self._ghost_btn(bf_hw, "删除选中", self.delete_hotword).pack(side=tk.LEFT)
+        self._ghost_btn(bf_hw, "清空全部", self.clear_hotwords).pack(side=tk.LEFT, padx=8)
+
         # 替换规则
         c4 = self._card(p); c4.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         self._section_title(c4, "替换规则")
-        tk.Label(c4, text="语音识别的误识别词汇会自动替换为正确文本", font=("Helvetica", 10), bg=C["bg_card"], fg=C["text_hint"]).pack(anchor=tk.W, padx=16, pady=(0, 4))
+        tk.Label(c4, text="识别后仍误识别的词汇会强制替换", font=("Helvetica", 10), bg=C["bg_card"], fg=C["text_hint"]).pack(anchor=tk.W, padx=16, pady=(0, 4))
         lf = tk.Frame(c4, bg=C["bg_card"]); lf.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
         sb = tk.Scrollbar(lf, bd=0); sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.rules_listbox = tk.Listbox(lf, font=("Helvetica", 12), bd=0, bg=C["white"], fg=C["text"], selectbackground=C["list_sel"], selectforeground=C["text"], highlightthickness=0, yscrollcommand=sb.set, activestyle="none")
@@ -386,15 +531,147 @@ class VoiceInputManager:
     def _on_service_error(self, message):
         self.root.after(0, lambda: messagebox.showerror("服务错误", message))
 
+    def _on_service_progress(self, stage, pct, detail):
+        """从 service 线程回调 — 调度到 GUI 线程"""
+        self.root.after(0, lambda: self._update_progress(stage, pct, detail))
+
+    def _update_progress(self, stage, pct, detail):
+        if stage == "download":
+            self._progress_frame.pack(fill=tk.X, padx=16, pady=(2, 8))
+            self._progress_canvas.update_idletasks()
+            w = self._progress_canvas.winfo_width()
+            if w < 10:
+                w = 400
+            self._progress_canvas.delete("all")
+            # 圆角背景
+            self._rr(self._progress_canvas, 0, 0, w, 10, r=5,
+                      fill=C["border"], outline="")
+            if pct >= 0:
+                self.status_label.config(text="下载模型中...", fg="#B89828")
+                self.status_dot.config(fg="#B89828")
+                self._progress_detail.config(text=f"{detail}  ({pct}%)")
+                fill_w = max(10, int(w * pct / 100))
+                self._rr(self._progress_canvas, 0, 0, fill_w, 10, r=5,
+                          fill=C["green"], outline="")
+            else:
+                self.status_label.config(text="下载模型中...", fg="#B89828")
+                self._progress_detail.config(text=detail)
+        elif stage == "load":
+            self._progress_frame.pack_forget()
+            self.status_label.config(text="加载模型中...", fg="#B89828")
+            self.status_dot.config(fg="#B89828")
+        else:
+            self._progress_frame.pack_forget()
+
+    # ── 首次启动引导 ──
+
+    def _show_onboarding(self):
+        if self.config.get("onboarding_done") or not self._is_fresh:
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("欢迎使用 Voice Aura")
+        dlg.configure(bg=C["bg_panel"])
+        dlg.resizable(False, False)
+        w, h = 500, 440
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        dlg.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # 标题
+        tk.Label(dlg, text="欢迎使用 Voice Aura",
+                 font=("Helvetica", 20, "bold"),
+                 bg=C["bg_panel"], fg=C["text"]).pack(pady=(28, 4))
+        tk.Label(dlg, text="开始前需要两个系统权限",
+                 font=("Helvetica", 12),
+                 bg=C["bg_panel"], fg=C["text_sec"]).pack(pady=(0, 16))
+
+        card = self._card(dlg)
+        card.pack(fill=tk.X, padx=24, pady=4)
+
+        # ❶ 辅助功能
+        r1 = tk.Frame(card, bg=C["bg_card"])
+        r1.pack(fill=tk.X, padx=16, pady=(12, 2))
+        tk.Label(r1, text="❶  辅助功能权限", font=("Helvetica", 13, "bold"),
+                 bg=C["bg_card"], fg=C["text"]).pack(side=tk.LEFT)
+        acc_lbl = tk.Label(r1, text="", font=("Helvetica", 12), bg=C["bg_card"])
+        acc_lbl.pack(side=tk.RIGHT)
+        tk.Label(card, text="    监听按键和输入识别文字",
+                 font=("Helvetica", 10), bg=C["bg_card"],
+                 fg=C["text_hint"]).pack(anchor=tk.W, padx=16)
+        self._accent_btn(card, "打开辅助功能设置",
+                         open_accessibility_settings).pack(anchor=tk.W, padx=16, pady=(4, 10))
+
+        # ❷ 麦克风
+        r2 = tk.Frame(card, bg=C["bg_card"])
+        r2.pack(fill=tk.X, padx=16, pady=(4, 2))
+        tk.Label(r2, text="❷  麦克风权限", font=("Helvetica", 13, "bold"),
+                 bg=C["bg_card"], fg=C["text"]).pack(side=tk.LEFT)
+        mic_lbl = tk.Label(r2, text="", font=("Helvetica", 12), bg=C["bg_card"])
+        mic_lbl.pack(side=tk.RIGHT)
+        tk.Label(card, text="    语音录制",
+                 font=("Helvetica", 10), bg=C["bg_card"],
+                 fg=C["text_hint"]).pack(anchor=tk.W, padx=16)
+        self._accent_btn(card, "授权麦克风",
+                         request_microphone_permission).pack(anchor=tk.W, padx=16, pady=(4, 12))
+
+        # 提示
+        tk.Label(dlg, text="点击按钮跳转设置，授权后状态会自动更新",
+                 font=("Helvetica", 10), bg=C["bg_panel"],
+                 fg=C["text_hint"]).pack(pady=(12, 4))
+
+        # 按钮
+        bf = tk.Frame(dlg, bg=C["bg_panel"])
+        bf.pack(pady=(8, 20))
+
+        def finish():
+            self.config["onboarding_done"] = True
+            save_config(self.config)
+            dlg.destroy()
+
+        self._make_btn(bf, "开始使用", finish,
+                       C["green_btn"], C["btn_text"],
+                       hover=C["green_btn_hover"]).pack(side=tk.LEFT, padx=8)
+        self._ghost_btn(bf, "稍后再说",
+                        lambda: dlg.destroy()).pack(side=tk.LEFT, padx=8)
+
+        # 实时轮询权限状态
+        def poll():
+            if not dlg.winfo_exists():
+                return
+            acc = check_accessibility()
+            mic = check_microphone()
+            acc_lbl.config(text="✓ 已授权" if acc else "✗ 未授权",
+                           fg=C["green"] if acc else C["red"])
+            mic_lbl.config(text="✓ 已授权" if mic else "✗ 未授权",
+                           fg=C["green"] if mic else C["red"])
+            dlg.after(2000, poll)
+
+        poll()
+
     # ── 事件处理 ──
 
     def on_start(self):
-        if not check_accessibility():
-            messagebox.showwarning("权限缺失",
-                "Voice Aura 需要辅助功能权限才能监听按键和输入文字。\n\n"
-                "请在系统设置中添加：\n"
-                "系统设置 → 隐私与安全性 → 辅助功能")
-            open_accessibility_settings()
+        acc = check_accessibility()
+        mic = check_microphone()
+        if not acc or not mic:
+            missing = []
+            if not acc:
+                missing.append("辅助功能")
+            if not mic:
+                missing.append("麦克风")
+            msg = f"缺少权限：{'、'.join(missing)}\n\n"
+            if not acc:
+                msg += "辅助功能 → 系统设置 → 隐私与安全性 → 辅助功能\n"
+            if not mic:
+                msg += "麦克风 → 系统设置 → 隐私与安全性 → 麦克风\n"
+            msg += "\n是否打开系统设置？"
+            if messagebox.askyesno("权限缺失", msg):
+                if not acc:
+                    open_accessibility_settings()
+                if not mic:
+                    request_microphone_permission()
             return
         self.service.start()
         self.root.after(2000, self.update_status)
@@ -471,6 +748,44 @@ class VoiceInputManager:
             self.config["replacements"] = {}
             save_config(self.config)
             self.refresh_rules()
+            self._prompt_restart()
+
+    # ── 热词管理 ──
+
+    def refresh_hotwords(self):
+        self.hotwords_listbox.delete(0, tk.END)
+        for w in self.config.get("hotwords", []):
+            self.hotwords_listbox.insert(tk.END, f"  {w}")
+
+    def add_hotword(self):
+        w = self.hotword_entry.get().strip()
+        if not w:
+            return
+        self.config.setdefault("hotwords", [])
+        if w not in self.config["hotwords"]:
+            self.config["hotwords"].append(w)
+            save_config(self.config)
+        self.refresh_hotwords()
+        self.hotword_entry.delete(0, tk.END)
+        self._prompt_restart()
+
+    def delete_hotword(self):
+        sel = self.hotwords_listbox.curselection()
+        if not sel:
+            return
+        text = self.hotwords_listbox.get(sel[0]).strip()
+        hw = self.config.get("hotwords", [])
+        if text in hw:
+            hw.remove(text)
+        save_config(self.config)
+        self.refresh_hotwords()
+        self._prompt_restart()
+
+    def clear_hotwords(self):
+        if messagebox.askyesno("确认", "清空全部热词？"):
+            self.config["hotwords"] = []
+            save_config(self.config)
+            self.refresh_hotwords()
             self._prompt_restart()
 
 

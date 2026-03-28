@@ -32,7 +32,13 @@ def get_default_config():
                 return json.load(f)
         except Exception:
             pass
-    return {"trigger_key": "cmd_r", "model": "Qwen/Qwen3-ASR-1.7B", "replacements": {}}
+    return {
+        "trigger_key": "cmd_r",
+        "model": "Qwen/Qwen3-ASR-1.7B",
+        "replacements": {},
+        "remove_fillers": True,
+        "space_reposition": True,
+    }
 
 
 def load_config():
@@ -47,6 +53,11 @@ def load_config():
         except Exception:
             pass
     return get_default_config()
+
+
+def is_fresh_install():
+    """判断是否为全新安装（配置文件不存在）"""
+    return not os.path.exists(CONFIG_FILE)
 
 
 def save_config(config):
