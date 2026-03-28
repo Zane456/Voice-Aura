@@ -1,8 +1,9 @@
-funasr
+torch
+numpy
 sounddevice
 soundfile
-pynput
-numpy
-torch
-modelscope
 qwen-asr
+huggingface_hub
+pyobjc-framework-Quartz
+pyobjc-framework-Cocoa
+pyobjc-framework-CoreFoundation
